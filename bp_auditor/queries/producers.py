@@ -3,7 +3,7 @@
 import ssl
 import json
 import socket
-
+import logging
 
 from datetime import datetime
 
@@ -143,27 +143,24 @@ async def get_avg_performance_this_month(chain_url: str, producer: str):
     # url += "limit=2&" # url += "sort=desc&"
     url += '&after=' + first_day_month
 
-    # make API call
-    response = await call_with_retry(asks.get, url)
-
     try:
-        response = response.json()
+        # make API call
+        response = await call_with_retry(asks.get, url)
+        data = response.json()
+    except json.JSONDecodeError as e:
+        logging.error(f"JSON decoding failed: {str(e)} | Response content: {response.text}")
+        return 'JSON decode error on get_performance query'
+    except Exception as e:
+        logging.error(f"Error making API call: {str(e)}")
+        return f'Error: {str(e)}'
 
-        if 'actions' not in response:
-            raise json.JSONDecodeError()
-
-        actions = response['actions']
-
-    except json.JSONDecodeError:
-        return 'json decode error on get_performance query'
-
+    actions = data.get('actions', [])
     total_actions = len(actions)
 
     if total_actions == 0:
-        return 'bp hasn\'t called eosmechanics:cpu this month'
+        return 'BP hasn\'t called eosmechanics:cpu this month'
 
-    sum_cpu = 0
-    for action in actions:
-        sum_cpu += action['cpu_usage_us']
+    sum_cpu = sum(action['cpu_usage_us'] for action in actions if 'cpu_usage_us' in action)
 
-    return f'{sum_cpu / total_actions:.2f} us'
+    average_cpu = sum_cpu / total_actions if total_actions else 0
+    return f'{average_cpu:.2f} us'

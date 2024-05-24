@@ -6,123 +6,102 @@ import trio
 
 from .queries import *
 
-
 async def check_producer(chain_url: str, producer: dict, chain_id: str):
-    report = {'owner': producer['owner']}
+    report = {
+        'owner': producer.get('owner', 'Unknown'),
+        'url': producer.get('url', 'No URL available'),
+        'bp_json': 'Not attempted',
+        'ssl_endpoints': [],
+        'p2p_endpoints': [],
+        'history': {
+            'HTTP': "Not attempted",
+            'HTTPS': "Not attempted"
+        },
+        'cpu': 'Not attempted'
+    }
     url = producer['url']
 
     if not url:
-        report['bp_json'] = f'NO URL ON CHAIN! owner: {producer["owner"]}'
+        report['bp_json'] = 'NO URL ON CHAIN! owner: {}'.format(producer['owner'])
 
     report['url'] = url
     try:
         bp_json = await get_bp_json(url, chain_id)
-        logging.info(f'got bp json for {url}')
-
-    except BaseException as e:
-        report['bp_json'] = str(e)
+        logging.info('got bp json for {}'.format(url))
+    except Exception as e:
+        report['bp_json'] = 'Failed to fetch BP JSON: {}'.format(str(e))
+        logging.error('Error fetching BP JSON for {}: {}'.format(url, e))
         return report
 
     try:
         validate_bp_json(bp_json)
-
     except MalformedJSONError as e:
-        report['bp_json'] = str(e)
+        report['bp_json'] = 'Malformed BP JSON: {}'.format(str(e))
         return report
 
     report['bp_json'] = 'ok'
-    logging.info(f'bp json for {url} valid')
+    logging.info('bp json for {} is valid'.format(url))
 
-    # check tls version on each ssl endpoint
-    ssl_endpoints = [
-        node
-        for node in bp_json['nodes']
-        if 'ssl_endpoint' in node and node['ssl_endpoint'] != ''
-    ]
+    # Check TLS version on each SSL endpoint
+    ssl_endpoints = [node for node in bp_json['nodes'] if 'ssl_endpoint' in node and node['ssl_endpoint']]
     report['ssl_endpoints'] = []
-    tlsv = None
     for node in ssl_endpoints:
-
         try:
             tlsv = await get_tls_version(node['ssl_endpoint'])
+        except Exception as e:
+            tlsv = 'TLS check failed: {}'.format(str(e))
+            logging.error('TLS check failed for {}: {}'.format(node['ssl_endpoint'], e))
 
-        except NetworkError as e:
-            tlsv = str(e)
+        report['ssl_endpoints'].append((node['node_type'], node['ssl_endpoint'], tlsv))
 
-        report['ssl_endpoints'].append(
-            (node['node_type'], node['ssl_endpoint'], tlsv))
+    logging.info('Checked SSL endpoint for {}'.format(url))
 
-    logging.info(f'checked ssl endpoint for {url}')
-
-    # check p2p node connect
-    p2p_endpoints = [
-        node
-        for node in bp_json['nodes']
-        if 'p2p_endpoint' in node and node['p2p_endpoint'] != ''
-    ]
+    # Check P2P node connect
+    p2p_endpoints = [node for node in bp_json['nodes'] if 'p2p_endpoint' in node and node['p2p_endpoint']]
     report['p2p_endpoints'] = []
     for node in p2p_endpoints:
         try:
-
             domain, port = node['p2p_endpoint'].split(':')
             port = int(port)
-
-        except ValueError:
-            report['p2p_endpoints'].append(
-                (node['node_type'], node['p2p_endpoint'], 'error'))
-
-        try:
             await check_port(domain, port)
             result = 'ok'
+        except Exception as e:
+            result = 'P2P connection failed: {}'.format(str(e))
+            logging.error('P2P connection check failed for {}: {}'.format(node['p2p_endpoint'], e))
 
-        except NetworkError as e:
-            result = str(e)
+        report['p2p_endpoints'].append((node['node_type'], node['p2p_endpoint'], result))
 
-        report['p2p_endpoints'].append(
-            (node['node_type'], node['p2p_endpoint'], 'ok'))
+    logging.info('Checked P2P endpoint for {}'.format(url))
 
-    logging.info(f'checked p2p endpoint for {url}')
+    # Combine checks for SSL and API endpoints
+    endpoints = {}
+    for node in bp_json.get('nodes', []):
+        if 'api_endpoint' in node and node['api_endpoint']:
+            endpoints['HTTP'] = node['api_endpoint']
+        if 'ssl_endpoint' in node and node['ssl_endpoint']:
+            endpoints['HTTPS'] = node['ssl_endpoint']
 
-    # get api node for history query
-    api_endpoints = [
-        node
-        for node in bp_json['nodes']
-        if 'api_endpoint' in node and node['api_endpoint'] != ''
-    ]
-    report['api_endpoints'] = []
-    api_endpoint = None
-    for node in api_endpoints:
-        node_type = node['node_type']
-        if (node_type == 'query' or
-            node_type == 'full' or
-            'query' in node_type or
-            'full' in node_type):
-            api_endpoint = node['api_endpoint']
+    # Check each endpoint for history, default to error message if not available
+    for protocol, endpoint in endpoints.items():
+        try:
+            early_block, late_block = await check_history(chain_url, endpoint)
+            report['history'] = {protocol: {'early': early_block, 'late': late_block}}
+            logging.info('Checked history for {} at {}.'.format(protocol, endpoint))
+        except Exception as e:
+            report['history'] = {protocol: 'History check failed: {}'.format(str(e))}
+            logging.error('History check failed for {} at {}: {}'.format(protocol, endpoint, str(e)))
 
-        report['api_endpoints'].append(
-            (node['node_type'], node['api_endpoint']))
+    # Default message if no endpoints were checked
+    if not endpoints:
+        report['history'] = {
+            'HTTP': "Couldn't determine API endpoint for history.",
+            'HTTPS': "Couldn't determine API endpoint for history."
+        }
+    logging.info('Checked history for {}'.format(url))
 
-    if api_endpoint:
-        logging.info(f'checking history for {api_endpoint}')
-        early_block, late_block = await check_history(chain_url, api_endpoint)
-
-    else:
-        early_block, late_block = ('couldn\'t figure out api endpoint' for i in range(2))
-
-    report['history'] = {
-        'early': early_block,
-        'late': late_block
-    }
-
-    logging.info(f'checked history for {url}')
-
-    report['cpu'] = await get_avg_performance_this_month(
-        chain_url,
-        bp_json['producer_account_name']
-    )
+    report['cpu'] = await get_avg_performance_this_month(chain_url, bp_json['producer_account_name'])
 
     return report
-
 
 import traceback
 async def check_all_producers(

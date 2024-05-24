@@ -12,9 +12,11 @@ setup(
         ]
     },
     install_requires=[
-        'trio',
+        'trio==0.22.2',
         'asks',
         'click',
-        'openpyxl'
+        'openpyxl',
+        'telebot',
+        'anyio~=3.0'
     ],
 )

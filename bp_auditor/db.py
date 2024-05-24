@@ -46,3 +46,22 @@ def read_all_reports_from(db_location: str, ts: datetime):
 
     # Close the connection to the database
     conn.close()
+
+def read_all_reports_fromDB(db_location: str, ts: datetime):
+    # Connect to the SQLite database
+    with sqlite3.connect(db_location) as conn:
+        c = conn.cursor()
+
+        # Execute query to fetch all relevant reports
+        c.execute("SELECT * FROM reports WHERE timestamp >= ?", (ts,))
+
+        results = []
+        for row in c.fetchall():
+            timestamp, text = row
+            reports = json.loads(text)
+            results.append({
+                'timestamp': timestamp,
+                'reports': reports
+            })
+
+        return results

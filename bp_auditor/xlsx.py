@@ -53,6 +53,31 @@ COLORS_CPU = [
     [COLOR_WHITE, COLOR_CPU_RED],
 ]
 
+def process_history_data(history):
+    """ Process and format the history data for the report. """
+    result = ""
+    passed = True  # Assume data is correct unless proven otherwise.
+
+    # Iterate through each protocol (e.g., "HTTP", "HTTPS")
+    for protocol, details in history.items():
+        if isinstance(details, dict):  # Make sure details is a dictionary
+            result += f"{protocol}:\n"  # Add protocol type to result
+            for key in ['early', 'late']:
+                data = details.get(key)
+                result += f"  {key}: "
+                if isinstance(data, list) and len(data) == 2:
+                    # Assuming the list should contain an ID and a block number
+                    result += f"{data[1]}\n"  # Append the block number
+                else:
+                    result += "Missing or incorrect format\n"
+                    passed = False
+        else:
+            result += f"{protocol}: Incorrect data format.\n"
+            passed = False  # Set to False if data format is not as expected
+
+    return result, passed
+
+
 
 def set_cell_color(ws, coord: str, fg_color: str, bg_color: str):
     # Create a new fill object with the gradient type set to 'path'
@@ -112,7 +137,7 @@ def produce_monthly_report(
             last_report_time = datetime.fromisoformat(timestamp)
 
             for report in reports:
-                owner = report['owner']
+                owner = report.get('owner', 'Default Owner')
                 if owner not in sheets:
                     sheets[owner] = 2
 
@@ -137,31 +162,14 @@ def produce_monthly_report(
                         p2p_passed = p2p_passed or ('seed' in capabilities and status == 'ok')
                         p2p_report += f'{json.dumps(capabilities)}, {status}\n'
 
-                hist_report = ''
-                hist_passed = False
+                hist_report = ""
+                hist_passed = True  # Assume true and prove false
+
                 if 'history' in report:
-                    early = report['history']['early']
-                    late = report['history']['late']
-
-                    hist_report = 'early: '
-                    early_passed = False
-                    if len(early) == 2:
-                        _id, block_num = early
-                        hist_report += f'{block_num}\n'
-                        early_passed = True
-                    else:
-                        hist_report += early + '\n'
-
-                    hist_report += 'late: '
-                    late_passed = False
-                    if len(late) == 2:
-                        _id, block_num = late
-                        hist_report += f'{block_num}\n'
-                        late_passed = True
-                    else:
-                        hist_report += late + '\n'
-
-                    hist_passed = early_passed and late_passed
+                    hist_report, hist_passed = process_history_data(report['history'])
+                else:
+                    hist_report = "No history data available.\n"
+                    hist_passed = False
 
                 if 'exception' in report:
                     ws.append([timestamp, report['exception']])
